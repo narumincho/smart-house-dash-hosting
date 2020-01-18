@@ -2,21 +2,17 @@ module Main exposing (Model, Msg, init, subscriptions, update, view)
 
 import Axis
 import Browser
-import Color exposing (Color)
+import Color
+import Dict
 import Html
-import Path exposing (Path)
-import Scale exposing (ContinuousScale, OrdinalScale)
+import Scale
 import Scale.Color
-import Shape
 import Statistics
-import Svg
-import Svg.Attributes
+import Task
 import Time
-import TypedSvg exposing (g, svg, text_)
-import TypedSvg.Attributes exposing (class, dy, fill, fontFamily, stroke, textAnchor, transform, viewBox)
-import TypedSvg.Attributes.InPx exposing (fontSize, height, strokeWidth, x, y)
-import TypedSvg.Core exposing (Svg, text)
-import TypedSvg.Types exposing (AnchorAlignment(..), Fill(..), Transform(..), em)
+import TypedSvg
+import TypedSvg.Attributes
+import TypedSvg.Types
 
 
 main : Program Flag Model Msg
@@ -30,31 +26,63 @@ main =
 
 
 type alias Flag =
-    List ( String, List ( Int, Float ) )
+    List ( Int, List ( String, Float ) )
 
 
 type Model
-    = Model
-        { data : List ( String, List ( Time.Posix, Float ) )
+    = LoadingTimeZone (Dict.Dict String (Dict.Dict Int Float))
+    | Model
+        { data : Dict.Dict String (Dict.Dict Int Float)
+        , timeZone : Time.Zone
         }
 
 
 init : Flag -> ( Model, Cmd Msg )
-init flags =
-    ( Model
-        { data = flags |> List.map (Tuple.mapSecond (List.map (Tuple.mapFirst Time.millisToPosix)))
-        }
-    , Cmd.none
+init flag =
+    ( LoadingTimeZone
+        (flag
+            |> List.foldl
+                (\( time, dataMap ) dict ->
+                    dataMap
+                        |> List.foldl
+                            (\( key, value ) nameAndTimeValueDict ->
+                                nameAndTimeValueDict
+                                    |> Dict.insert key
+                                        (case nameAndTimeValueDict |> Dict.get key of
+                                            Just d ->
+                                                d |> Dict.insert time value
+
+                                            Nothing ->
+                                                Dict.singleton time value
+                                        )
+                            )
+                            dict
+                )
+                Dict.empty
+        )
+    , Time.here |> Task.perform ResponseTimeZone
     )
 
 
-type alias Msg =
-    Never
+type Msg
+    = ResponseTimeZone Time.Zone
 
 
 update : Msg -> Model -> ( Model, Cmd Msg )
-update _ model =
-    ( model, Cmd.none )
+update msg model =
+    case ( msg, model ) of
+        ( ResponseTimeZone timeZone, LoadingTimeZone data ) ->
+            ( Model
+                { data = data
+                , timeZone = timeZone
+                }
+            , Cmd.none
+            )
+
+        ( _, _ ) ->
+            ( model
+            , Cmd.none
+            )
 
 
 subscriptions : Model -> Sub Msg
@@ -62,13 +90,13 @@ subscriptions model =
     Sub.none
 
 
-w : Float
-w =
+width : Float
+width =
     900
 
 
-h : Float
-h =
+height : Float
+height =
     450
 
 
@@ -77,106 +105,152 @@ padding =
     60
 
 
-series data =
-    List.map
-        (\( label, d ) ->
-            { label = label
-            , accessor = d
-            }
-        )
-
-
-accessors : List (CrimeRate -> Int)
-accessors =
-    List.map .accessor series
-
-
-values : CrimeRate -> List Float
-values i =
-    List.map (\a -> toFloat <| a i) accessors
-
-
-colorScale : OrdinalScale String Color
-colorScale =
-    List.map .label series
+colorScale : Dict.Dict String (Dict.Dict Int Float) -> Scale.OrdinalScale String Color.Color
+colorScale data =
+    data
+        |> Dict.keys
         |> Scale.ordinal Scale.Color.category10
 
 
-color : String -> Color
-color =
-    Scale.convert colorScale >> Maybe.withDefault Color.black
+color : Dict.Dict String (Dict.Dict Int Float) -> String -> Color.Color
+color data name =
+    name
+        |> Scale.convert (colorScale data)
+        |> Maybe.withDefault Color.black
 
 
-view : Model -> Svg msg
-view (Model { data }) =
+intTimeToString : Time.Zone -> Int -> String
+intTimeToString timeZone intTime =
     let
-        last =
-            -1
+        time =
+            Time.millisToPosix intTime
 
-        first =
-            1
+        year =
+            Time.toYear timeZone time
 
-        xScale : ContinuousScale Float
+        month =
+            Time.toMonth timeZone time
+
+        day =
+            Time.toDay timeZone time
+
+        hour =
+            Time.toHour timeZone time
+
+        minute =
+            Time.toMinute timeZone time
+
+        second =
+            Time.toSecond timeZone time
+    in
+    String.fromInt year
+        ++ "/"
+        ++ monthToString month
+        ++ "/"
+        ++ String.fromInt day
+        ++ " "
+        ++ String.fromInt hour
+        ++ ":"
+        ++ String.fromInt minute
+        ++ ":"
+        ++ String.fromInt second
+
+
+monthToString : Time.Month -> String
+monthToString month =
+    case month of
+        Time.Jan ->
+            "1"
+
+        Time.Feb ->
+            "2"
+
+        Time.Mar ->
+            "3"
+
+        Time.Apr ->
+            "4"
+
+        Time.May ->
+            "5"
+
+        Time.Jun ->
+            "6"
+
+        Time.Jul ->
+            "7"
+
+        Time.Aug ->
+            "8"
+
+        Time.Sep ->
+            "9"
+
+        Time.Oct ->
+            "10"
+
+        Time.Nov ->
+            "11"
+
+        Time.Dec ->
+            "12"
+
+
+view : Model -> Html.Html msg
+view model =
+    case model of
+        LoadingTimeZone data ->
+            Html.text "タイムゾーンを取得中……"
+
+        Model record ->
+            mainView record
+
+
+mainView : { data : Dict.Dict String (Dict.Dict Int Float), timeZone : Time.Zone } -> Html.Html msg
+mainView { data, timeZone } =
+    let
+        xScale : Scale.ContinuousScale Float
         xScale =
             data
-                |> List.map (.year >> toFloat)
+                |> Dict.foldl (\_ v state -> state ++ Dict.keys v) []
+                |> List.map toFloat
                 |> Statistics.extent
-                |> Maybe.withDefault ( 1900, 1901 )
-                |> Scale.linear ( 0, w - 2 * padding )
+                |> Maybe.withDefault ( 0, 0 )
+                |> Scale.linear ( 0, width - 2 * padding )
 
-        yScale : ContinuousScale Float
+        --|> (\scale -> { scale | tickFormat = \timeInt -> intTimeToString timeZone timeInt })
+        yScale : Scale.ContinuousScale Float
         yScale =
-            data
-                |> List.map (values >> List.maximum >> Maybe.withDefault 0)
-                |> List.maximum
-                |> Maybe.withDefault 0
-                |> (\b -> ( 0, b ))
-                |> Scale.linear ( h - 2 * padding, 0 )
+            ( 0, 1 )
+                |> Scale.linear ( height - 2 * padding, 0 )
                 |> Scale.nice 4
-
-        lineGenerator : ( Int, Int ) -> Maybe ( Float, Float )
-        lineGenerator ( x, y ) =
-            Just ( Scale.convert xScale (toFloat x), Scale.convert yScale (toFloat y) )
-
-        line : (( Time.Posix, Float ) -> ( Time.Posix, Float )) -> Path
-        line accessor =
-            accessor data
-                |> List.map (\( time, value ) -> ( Time.posixToMillis time, value ))
-                |> List.map lineGenerator
-                |> Shape.line Shape.monotoneInXCurve
     in
-    svg [ viewBox 0 0 w h ]
-        [ g [ transform [ Translate (padding - 1) (h - padding) ] ]
-            [ Axis.bottom [ Axis.tickCount 10 ] xScale ]
-        , g [ transform [ Translate (padding - 1) padding ] ]
-            [ Axis.left [ Axis.ticks (values first) ] yScale
-            , text_ [ fontFamily [ "sans-serif" ], fontSize 10, x 5, y 5 ] [ text "Occurences" ]
-            ]
-        , g [ transform [ Translate padding padding ], class [ "series" ] ]
-            (List.map
-                (\{ accessor, label } ->
-                    Path.element (line accessor)
-                        [ stroke (color label)
-                        , strokeWidth 3
-                        , fill FillNone
-                        ]
-                )
-                (series data)
-            )
-        , g [ fontFamily [ "sans-serif" ], fontSize 10 ]
-            (List.map
-                (\{ accessor, label } ->
-                    g
-                        [ transform
-                            [ Translate (w - padding + 10) (padding + Scale.convert yScale (toFloat (accessor last)))
-                            ]
-                        ]
-                        [ text_ [ fill (Fill (color label)) ] [ text label ] ]
-                )
-                (series data)
-            )
-        , g [ transform [ Translate (w - padding) (padding + 20) ] ]
-            [ text_ [ fontFamily [ "sans-serif" ], fontSize 20, textAnchor AnchorEnd ] [ text "Violent Crime in the US" ]
-            , text_ [ fontFamily [ "sans-serif" ], fontSize 10, textAnchor AnchorEnd, dy (em 1) ] [ text "Source: fbi.gov" ]
+    Html.div
+        []
+        [ title
+        , TypedSvg.svg
+            [ TypedSvg.Attributes.viewBox 0 0 width height ]
+            [ TypedSvg.g
+                [ TypedSvg.Attributes.transform
+                    [ TypedSvg.Types.Translate (padding - 1) (height - padding) ]
+                ]
+                [ Axis.bottom [ Axis.tickCount 1 ]
+                    xScale
+                ]
+            , TypedSvg.g
+                [ TypedSvg.Attributes.transform
+                    [ TypedSvg.Types.Translate (padding - 1) padding ]
+                ]
+                [ Axis.left
+                    [ Axis.ticks [ 0 ] ]
+                    yScale
+                ]
             ]
         ]
+
+
+title : Html.Html msg
+title =
+    Html.h1
+        []
+        [ Html.text "https://us-central1-smart-house-dash.cloudfunctions.net/api に送られてきたデータ" ]

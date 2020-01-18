@@ -9,7 +9,7 @@ export namespace Elm {
   }
 }
 
-type Flags = Array<[string, Array<[number, number]>]>;
+type Flags = Array<[number, Array<[string, number]>]>;
 
 type Ports = {};
 
